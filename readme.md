@@ -39,6 +39,49 @@ Raw(load="GET / HTTP/1.1\r\nHost: safe.com\r\n\r\n")
 - Payload: HTTP request injected by script.
 ```
 
+### Responses
+### **Responses Without Script (Only Nmap):**
+
+#### **1. Open Port (SYN-ACK)**
+```plaintext
+IP(src=192.168.1.1, dst=192.168.1.100, ttl=64)/
+TCP(sport=80, dport=12345, flags="SA", window=29200, options=[('MSS', 1460)])
+```
+
+#### **2. Closed Port (RST)**
+```plaintext
+IP(src=192.168.1.1, dst=192.168.1.100, ttl=64)/
+TCP(sport=80, dport=12345, flags="R", window=0)
+```
+
+#### **3. Filtered Port (ICMP Response)**
+```plaintext
+IP(src=192.168.1.1, dst=192.168.1.100, ttl=64)/
+ICMP(type=3, code=13)  # Destination unreachable, filtered.
+```
+
+### **Responses With Script (Integrated with Nmap and Evasion):**
+
+#### **1. Open Port (SYN-ACK with Modified Options)**
+```plaintext
+IP(src=192.168.1.1, dst=192.168.1.100, ttl=64)/
+TCP(sport=80, dport=12345, flags="SA", window=5840, options=[('MSS', 1460), ('Timestamp', (34567, 78901)), ('WScale', 10)])
+```
+
+#### **2. Closed Port (RST with Decoy TTL/Evasion)** 
+```plaintext
+IP(src=192.168.1.1, dst=192.168.1.100, ttl=254)/
+TCP(sport=80, dport=12345, flags="R", window=0)
+```
+
+#### **3. Filtered Port (Custom ICMP Response)** 
+```plaintext
+IP(src=192.168.1.1, dst=192.168.1.100, ttl=64)/
+ICMP(type=3, code=13, load="Filtered by advanced firewall.")  # Enhanced evasion detected.
+```
+
+
+
 ### Installation
 1. Clone the repository:
    ```bash
