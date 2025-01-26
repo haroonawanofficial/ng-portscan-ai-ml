@@ -3,8 +3,6 @@
 ### Overview
 The **Next-Generation Port Scanner** is an advanced, AI/ML-powered port scanning tool designed for comprehensive network analysis and evasion techniques. This tool integrates with custom tools like `nmap` and `hping`, or any custom TCP/IP written in python, perl, go, etc stealth techniques to bypass IDS/IPS defenses while providing detailed reports.
 
----
-
 ### Features
 - **Advanced Scanning Techniques**: Supports ICMP, TCP, UDP, and custom payload-based scans.
 - **Evasion Mechanisms**: Incorporates TTL manipulation, TCP window size adjustments, and fragmentation attacks.
@@ -12,8 +10,6 @@ The **Next-Generation Port Scanner** is an advanced, AI/ML-powered port scanning
 - **AI/ML-Powered Adaptation**: Detects false positives and optimizes scan strategies using trained models.
 - **Deep Packet Inspection (DPI)**: Analyzes network traffic to identify firewalls, IDS/IPS, and segment configurations.
 - **Dynamic Reporting**: Generates detailed tabular and JSON reports, highlighting detected vulnerabilities and network configurations.
-
----
 
 ### Installation
 1. Clone the repository:
@@ -47,6 +43,15 @@ The **Next-Generation Port Scanner** is an advanced, AI/ML-powered port scanning
 --customtool: Execute custom commands like nmap or hping.
 --dpi: Enable deep packet inspection for detailed traffic analysis.
    ```
+
+### Created by
+Haroon Awan
+
+### Comapny
+cyberzeus.pk
+
+### Email
+Haroon@cyberzeus.pk
 
 ### Contributions
 Contributions are welcome! Feel free to submit issues or pull requests.
