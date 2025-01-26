@@ -39,7 +39,6 @@ Raw(load="GET / HTTP/1.1\r\nHost: safe.com\r\n\r\n")
 - Payload: HTTP request injected by script.
 ```
 
-### Responses
 ### **Responses Without Script (Only Nmap):**
 
 #### **1. Open Port (SYN-ACK)**
@@ -80,12 +79,13 @@ IP(src=192.168.1.1, dst=192.168.1.100, ttl=64)/
 ICMP(type=3, code=13, load="Filtered by advanced firewall.")  # Enhanced evasion detected.
 ```
 
+I leave it upto to users reading this, can you spot the difference?
 
 
 ### Installation
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/ng-portscanner.git
+   git clone https://github.com/haroonawanofficial/ng-portscanner.git
    ```
 
 2. Navigate to the directory:
