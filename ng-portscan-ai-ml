@@ -1,0 +1,2246 @@
+#!/usr/bin/env python3
+# next-generation-portscan.py
+
+import subprocess
+import random
+import logging
+from datetime import datetime
+from scapy.layers.inet import IPOption
+from scapy.all import *
+from scapy.layers.inet import IP, ICMP, TCP, UDP
+from scapy.layers.dns import DNS, DNSQR
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import argparse
+from colorama import Fore, Style, init
+import shutil
+from tabulate import tabulate
+import time
+import joblib  # For loading ML models
+import os
+import json
+import sys
+import sqlite3
+
+# Initialize Colorama
+init(autoreset=True)
+
+# ---------------------------- Configuration ----------------------------
+
+# Define available scan and evasion techniques
+AVAILABLE_SCANS = [
+    "icmp_with_dns",
+    "icmp_with_http",
+    "icmp_with_custom_data",
+    "icmp_timestamp_request",
+    "icmp_address_mask_request",
+    "icmp_echo_with_random_data",
+    "tcp_with_http",
+    "tcp_syn_with_custom_payload",
+    "tcp_ack_with_dns",
+    "tcp_rst_with_http",
+    "tcp_fin_with_dns",
+    "tcp_urg_with_http",
+    "tcp_psh_with_dns",
+    "tcp_syn_ack_with_http",
+    "tcp_with_random_data",
+    "udp_with_dns",
+    "udp_with_http",
+    "udp_with_custom_payload",
+    "udp_with_icmp",
+    "udp_with_random_data",
+    "ai_ml_firewall_bypass",
+    "aggressive_tcp_scan",         # Additional aggressive scan
+    "aggressive_udp_scan",         # Additional aggressive scan
+    "aggressive_syn_scan"          # Additional aggressive scan
+]
+
+AVAILABLE_EVASIONS = [
+    "random_ttl_icmp",
+    "tcp_window_size_manipulation",
+    "tcp_timestamp_manipulation",
+    "ip_option_padding",
+    "tcp_flag_scan",
+    "decoy_scan",
+    "adaptive_timing_scan",
+    "mixed_protocol_scan",
+    "tcp_syn_flood",
+    "randomized_payload_scan",
+    "fragmentation_attack"         # Additional evasion
+]
+
+# ---------------------------- Logging Setup ----------------------------
+
+# Setup logging
+logging.basicConfig(
+    filename='covert_scan_log.txt',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+# ---------------------------- Database Setup ----------------------------
+
+DB_NAME = 'scan_results.db'
+
+def initialize_database():
+    """
+    Initializes the SQLite database and creates necessary tables.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    # Create table for scan results
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS scan_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            target_ip TEXT,
+            target_port INTEGER,
+            scan_type TEXT,
+            response_summary TEXT,
+            port_status TEXT,
+            os_detected TEXT,
+            ttl INTEGER,
+            evasion_used TEXT,
+            firewalk_used TEXT,
+            segment_detected TEXT,
+            segment_ip TEXT,
+            ids_ips_detection TEXT,
+            echo_reply_status TEXT,
+            custom_tool_output TEXT
+        )
+    ''')
+    # Create table for DPI results
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS dpi_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            target_ip TEXT,
+            attack_type TEXT,
+            detected INTEGER,
+            current_network_status TEXT
+        )
+    ''')
+    # Create table for device signatures (optional for future expansions)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS device_signatures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_name TEXT,
+            os TEXT,
+            firewall TEXT,
+            signature_details TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+# Initialize the database
+initialize_database()
+
+# ---------------------------- OS Detection Enhancements ----------------------------
+
+# Define OS detection based on TTL and Window Size
+OS_SIGNATURES = [
+    {
+        "name": "Linux",
+        "ttl_range": range(64, 65),
+        "window_size": [5840, 5720, 65535, 65535, 65535]
+    },
+    {
+        "name": "Windows",
+        "ttl_range": range(128, 129),
+        "window_size": [8192, 65535]
+    },
+    {
+        "name": "Cisco",
+        "ttl_range": range(254, 255),
+        "window_size": [4128]
+    },
+    {
+        "name": "FreeBSD",
+        "ttl_range": range(64, 65),
+        "window_size": [65535]
+    },
+    {
+        "name": "Solaris",
+        "ttl_range": range(64, 65),
+        "window_size": [65535]
+    },
+    # Add more OS signatures as needed
+]
+
+def infer_os(ttl, window_size):
+    """
+    Infers the operating system based on TTL and Window Size.
+
+    Args:
+        ttl (int): TTL value from the response packet.
+        window_size (int): TCP Window Size from the response packet.
+
+    Returns:
+        str: Detected operating system.
+    """
+    for signature in OS_SIGNATURES:
+        if ttl in signature["ttl_range"] and window_size in signature["window_size"]:
+            return signature["name"]
+    return "Unknown"
+
+def extract_tcp_options(tcp_layer):
+    """
+    Extracts TCP options from a TCP layer.
+
+    Args:
+        tcp_layer (TCP): The TCP layer of the packet.
+
+    Returns:
+        list: List of TCP options tuples.
+    """
+    return tcp_layer.options if tcp_layer.options else []
+
+def detect_icmp_details(response):
+    """
+    Extracts detailed ICMP information.
+
+    Args:
+        response (Packet): The response packet.
+
+    Returns:
+        tuple: (ICMP type, ICMP code)
+    """
+    if response.haslayer(ICMP):
+        icmp_layer = response.getlayer(ICMP)
+        return (icmp_layer.type, icmp_layer.code)
+    return (None, None)
+import time
+
+def measure_response_time(packet):
+    """
+    Measures the response time for a given packet.
+
+    Args:
+        packet (Packet): The packet to send.
+
+    Returns:
+        float: Response time in seconds.
+    """
+    start_time = time.time()
+    response = sr1(packet, timeout=2, verbose=False)
+    end_time = time.time()
+    if response:
+        return end_time - start_time
+    return None
+
+# ---------------------------- Firewall/Router Signatures ----------------------------
+FIREWALL_SIGNATURES = [
+    {
+        "name": "Cisco ASA",
+        "flags": "SA",
+        "ttl_range": range(64, 65),
+        "window_size": [4128],
+        "os": "Cisco IOS",
+        "vendor": "Cisco",
+        "model": "ASA",
+        "notes": "Cisco Adaptive Security Appliance",
+        "tcp_options": [
+            ('MSS', 1460),
+            ('NOP', None),
+            ('WScale', 8),
+            ('SAckOK', None),
+            ('Timestamp', (0, 0))
+        ],
+        "icmp_type": 0,  # Echo Reply
+    },
+    {
+        "name": "Fortinet FortiGate",
+        "flags": "RA",
+        "ttl_range": range(128, 129),
+        "window_size": [65535],
+        "os": "FortiOS",
+        "vendor": "Fortinet",
+        "model": "FortiGate",
+        "notes": "Fortinet Next-Generation Firewall",
+        "tcp_options": [
+            ('MSS', 1440),
+            ('NOP', None),
+            ('WScale', 7),
+            ('SAckOK', None),
+            ('Timestamp', (0, 0))
+        ],
+        "icmp_type": 3,  # Destination Unreachable
+    },
+    {
+        "name": "Palo Alto Networks",
+        "flags": "SA",
+        "ttl_range": range(64, 65),
+        "window_size": [65535],
+        "os": "PanOS",
+        "vendor": "Palo Alto Networks",
+        "model": "PA-Series",
+        "notes": "Palo Alto Networks Next-Generation Firewall",
+        "tcp_options": [
+            ('MSS', 1460),
+            ('NOP', None),
+            ('WScale', 10),
+            ('SAckOK', None),
+            ('Timestamp', (0, 0))
+        ],
+        "icmp_type": 0,  # Echo Reply
+    },
+    # ... (Include other firewall signatures as previously defined)
+]
+
+
+def detect_firewall(response):
+    """
+    Detects if the response matches any known firewall/router signatures.
+    Requires multiple matching criteria to confirm detection to reduce false positives.
+
+    Args:
+        response (Packet): The response packet from the target.
+
+    Returns:
+        str: Name(s) of the detected firewall/router or 'No Present'.
+    """
+    if not response:
+        return "No Present"
+
+    detected_firewalls = []
+
+    flags = ""
+    window_size = None
+    ttl = response.ttl
+    tcp_options = []
+
+    if response.haslayer(TCP):
+        tcp_layer = response.getlayer(TCP)
+        flags = tcp_layer.flags
+        window_size = tcp_layer.window
+        tcp_options = tcp_layer.options
+    elif response.haslayer(ICMP):
+        icmp_layer = response.getlayer(ICMP)
+        flags = icmp_layer.type  # Using ICMP type for certain firewalls
+
+    # Iterate through each signature to check for matches
+    for signature in FIREWALL_SIGNATURES:
+        criteria_met = 0
+
+        # Check TCP Flags
+        if response.haslayer(TCP):
+            if flags == signature["flags"]:
+                criteria_met += 1
+
+            # Check TTL Range
+            if ttl in signature["ttl_range"]:
+                criteria_met += 1
+
+            # Check Window Size
+            if window_size in signature["window_size"]:
+                criteria_met += 1
+
+            # Check TCP Options
+            if 'tcp_options' in signature and tcp_options:
+                for option in signature["tcp_options"]:
+                    if option in tcp_options:
+                        criteria_met += 1
+                    else:
+                        break  # If any option doesn't match, skip
+                else:
+                    criteria_met += 1  # All options matched
+
+        # Check ICMP Type
+        if response.haslayer(ICMP):
+            if flags == signature["icmp_type"]:
+                criteria_met += 1
+
+        # Check OS
+        if response.haslayer(TCP) and signature["os"] == infer_os(ttl, window_size):
+            criteria_met += 1
+
+        # Determine if enough criteria are met to consider it a match
+        if criteria_met >= 4:  # Adjust the threshold as needed
+            detected_firewalls.append(f"{signature['name']} ({signature['vendor']}, {signature['model']})")
+
+    if detected_firewalls:
+        return ", ".join(detected_firewalls)
+
+    return "No Present"
+
+
+# ---------------------------- Device Signatures ----------------------------
+DEVICE_SIGNATURES = [
+    {
+        "name": "Cisco Router",
+        "os": "Cisco IOS",
+        "firewall": "Cisco ASA",
+        "vendor": "Cisco",
+        "model": "ISR 4000 Series",
+        "signature_details": {
+            "tcp_window_size": 4128,
+            "tcp_options": [
+                ('MSS', 1460),
+                ('NOP', None),
+                ('WScale', 8),
+                ('SAckOK', None),
+                ('Timestamp', (0, 0))
+            ],
+            "icmp_type": 0,  # Echo Reply
+            "ttl_range": range(64, 65),
+            "response_behavior": {
+                "SYN-ACK_flags": "SA",
+                "RST_flags": "R",
+                "ICMP_response": "Echo Reply with Payload"
+            }
+        },
+        "notes": "Cisco-specific TCP/IP stack behavior with distinctive TCP options.",
+        "matching_algorithm": "Exact Match"  # Placeholder for algorithm type
+    },
+    {
+        "name": "Fortinet FortiGate Firewall",
+        "os": "FortiOS",
+        "firewall": "Fortinet FortiGate",
+        "vendor": "Fortinet",
+        "model": "FortiGate 6000F",
+        "signature_details": {
+            "tcp_window_size": 65535,
+            "tcp_options": [
+                ('MSS', 1440),
+                ('NOP', None),
+                ('WScale', 7),
+                ('SAckOK', None),
+                ('Timestamp', (0, 0))
+            ],
+            "icmp_type": 3,  # Destination Unreachable
+            "ttl_range": range(128, 129),
+            "response_behavior": {
+                "SYN-ACK_flags": "RA",
+                "RST_flags": "R",
+                "ICMP_response": "Destination Unreachable"
+            }
+        },
+        "notes": "Fortinet-specific packet responses with unique window sizes and TCP options.",
+        "matching_algorithm": "Exact Match"
+    },
+    {
+        "name": "Palo Alto Networks Firewall",
+        "os": "PanOS",
+        "firewall": "Palo Alto Networks",
+        "vendor": "Palo Alto Networks",
+        "model": "PA-5200 Series",
+        "signature_details": {
+            "tcp_window_size": 65535,
+            "tcp_options": [
+                ('MSS', 1460),
+                ('NOP', None),
+                ('WScale', 10),
+                ('SAckOK', None),
+                ('Timestamp', (0, 0))
+            ],
+            "icmp_type": 0,  # Echo Reply
+            "ttl_range": range(64, 65),
+            "response_behavior": {
+                "SYN-ACK_flags": "SA",
+                "RST_flags": "R",
+                "ICMP_response": "Echo Reply with Payload"
+            }
+        },
+        "notes": "Palo Alto-specific TCP/IP stack behavior with advanced TCP options.",
+        "matching_algorithm": "Exact Match"
+    },
+    {
+        "name": "Juniper SRX Firewall",
+        "os": "Juniper Junos",
+        "firewall": "Juniper SRX",
+        "vendor": "Juniper Networks",
+        "model": "SRX5500",
+        "signature_details": {
+            "tcp_window_size": 65535,
+            "tcp_options": [
+                ('MSS', 1460),
+                ('NOP', None),
+                ('WScale', 10),
+                ('SAckOK', None),
+                ('Timestamp', (0, 0))
+            ],
+            "icmp_type": 0,  # Echo Reply
+            "ttl_range": range(64, 65),
+            "response_behavior": {
+                "SYN-ACK_flags": "SA",
+                "RST_flags": "R",
+                "ICMP_response": "Echo Reply with Payload"
+            }
+        },
+        "notes": "Juniper-specific TCP/IP stack behavior with distinctive TCP options.",
+        "matching_algorithm": "Exact Match"
+    },
+    {
+        "name": "Sophos XG Firewall",
+        "os": "Sophos XG",
+        "firewall": "Sophos XG Firewall",
+        "vendor": "Sophos",
+        "model": "XG 210",
+        "signature_details": {
+            "tcp_window_size": 65535,
+            "tcp_options": [
+                ('MSS', 1460),
+                ('NOP', None),
+                ('WScale', 8),
+                ('SAckOK', None),
+                ('Timestamp', (0, 0))
+            ],
+            "icmp_type": 0,  # Echo Reply
+            "ttl_range": range(64, 65),
+            "response_behavior": {
+                "SYN-ACK_flags": "SA",
+                "RST_flags": "R",
+                "ICMP_response": "Echo Reply with Payload"
+            }
+        },
+        "notes": "Sophos-specific TCP/IP stack behavior with unique TCP options.",
+        "matching_algorithm": "Exact Match"
+    },
+    {
+        "name": "SonicWall TZ Series",
+        "os": "SonicOS",
+        "firewall": "SonicWall TZ Series",
+        "vendor": "SonicWall",
+        "model": "TZ400",
+        "signature_details": {
+            "tcp_window_size": 65535,
+            "tcp_options": [
+                ('MSS', 1440),
+                ('NOP', None),
+                ('WScale', 7),
+                ('SAckOK', None),
+                ('Timestamp', (0, 0))
+            ],
+            "icmp_type": 0,  # Echo Reply
+            "ttl_range": range(64, 65),
+            "response_behavior": {
+                "SYN-ACK_flags": "SA",
+                "RST_flags": "R",
+                "ICMP_response": "Echo Reply with Payload"
+            }
+        },
+        "notes": "SonicWall-specific TCP/IP stack behavior with distinctive TCP options.",
+        "matching_algorithm": "Exact Match"
+    },
+    {
+        "name": "Huawei USG Series",
+        "os": "Huawei VRP",
+        "firewall": "Huawei USG Series",
+        "vendor": "Huawei",
+        "model": "USG6000",
+        "signature_details": {
+            "tcp_window_size": 65535,
+            "tcp_options": [
+                ('MSS', 1460),
+                ('NOP', None),
+                ('WScale', 10),
+                ('SAckOK', None),
+                ('Timestamp', (0, 0))
+            ],
+            "icmp_type": 0,  # Echo Reply
+            "ttl_range": range(64, 65),
+            "response_behavior": {
+                "SYN-ACK_flags": "SA",
+                "RST_flags": "R",
+                "ICMP_response": "Echo Reply with Payload"
+            }
+        },
+        "notes": "Huawei-specific TCP/IP stack behavior with advanced TCP options.",
+        "matching_algorithm": "Exact Match"
+    },
+    {
+        "name": "Barracuda CloudGen Firewall",
+        "os": "Barracuda OS",
+        "firewall": "Barracuda CloudGen Firewall",
+        "vendor": "Barracuda Networks",
+        "model": "CloudGen Firewall",
+        "signature_details": {
+            "tcp_window_size": 65535,
+            "tcp_options": [
+                ('MSS', 1460),
+                ('NOP', None),
+                ('WScale', 9),
+                ('SAckOK', None),
+                ('Timestamp', (0, 0))
+            ],
+            "icmp_type": 0,  # Echo Reply
+            "ttl_range": range(64, 65),
+            "response_behavior": {
+                "SYN-ACK_flags": "SA",
+                "RST_flags": "R",
+                "ICMP_response": "Echo Reply with Payload"
+            }
+        },
+        "notes": "Barracuda-specific TCP/IP stack behavior with unique TCP options.",
+        "matching_algorithm": "Exact Match"
+    },
+    {
+        "name": "WatchGuard Firebox",
+        "os": "Fireware OS",
+        "firewall": "WatchGuard Firebox",
+        "vendor": "WatchGuard",
+        "model": "Firebox V-Series",
+        "signature_details": {
+            "tcp_window_size": 65535,
+            "tcp_options": [
+                ('MSS', 1460),
+                ('NOP', None),
+                ('WScale', 8),
+                ('SAckOK', None),
+                ('Timestamp', (0, 0))
+            ],
+            "icmp_type": 0,  # Echo Reply
+            "ttl_range": range(64, 65),
+            "response_behavior": {
+                "SYN-ACK_flags": "SA",
+                "RST_flags": "R",
+                "ICMP_response": "Echo Reply with Payload"
+            }
+        },
+        "notes": "WatchGuard-specific TCP/IP stack behavior with distinctive TCP options.",
+        "matching_algorithm": "Exact Match"
+    },
+    # Add more device signatures as needed
+]
+
+def detect_device(os_detected, firewall_detected):
+    """
+    Detects the device based on OS and Firewall detection.
+
+    Args:
+        os_detected (str): Detected operating system.
+        firewall_detected (str): Detected firewall.
+
+    Returns:
+        str: Device name or 'Unknown Device'.
+    """
+    for device in DEVICE_SIGNATURES:
+        if os_detected == device["os"] and device["firewall"] in firewall_detected:
+            return device["name"]
+    return "Unknown Device"
+
+# ---------------------------- AI/ML Models ----------------------------
+
+# Load AI/ML models (placeholders)
+MODEL_PATH_FALSE_POSITIVE = 'false_positive_model.pkl'
+MODEL_PATH_ADAPTIVE = 'adaptive_model.pkl'
+
+false_positive_model = None
+adaptive_model = None
+
+if os.path.exists(MODEL_PATH_FALSE_POSITIVE) and os.path.exists(MODEL_PATH_ADAPTIVE):
+    try:
+        false_positive_model = joblib.load(MODEL_PATH_FALSE_POSITIVE)
+        adaptive_model = joblib.load(MODEL_PATH_ADAPTIVE)
+        logging.info("AI/ML models loaded successfully.")
+    except Exception as e:
+        false_positive_model = None
+        adaptive_model = None
+        logging.error(f"Error loading AI/ML models: {e}")
+else:
+    logging.warning("AI/ML models not found. Continuing without AI/ML capabilities.")
+
+# ---------------------------- Utility Functions ----------------------------
+
+def print_banner():
+    banner = f"""
+{Fore.CYAN}#############################################
+#                                           #
+#  {Fore.WHITE}Next-Generation Port Scanner        {Fore.CYAN}     #
+#  {Fore.YELLOW}Version: 3.0.0{Fore.CYAN}                           #
+#  Developed by {Fore.GREEN}Haroon Ahmad Awan{Fore.CYAN}           #
+#  {Fore.GREEN}haroon@cyberzeus.pk{Fore.CYAN}                      #
+#  {Fore.MAGENTA}Advanced Scanning | AI/ML Integration {Fore.CYAN}   #
+#                                           #
+#############################################{Style.RESET_ALL}
+"""
+    print(banner)
+
+def get_service_name(port):
+    """
+    Returns the service name based on port number.
+
+    Args:
+        port (int): Port number.
+
+    Returns:
+        str: Service name.
+    """
+    common_services = {
+        22: "SSH",
+        23: "Telnet",
+        25: "SMTP",
+        53: "DNS",
+        67: "DHCP Server",
+        68: "DHCP Client",
+        69: "TFTP",
+        80: "HTTP",
+        110: "POP3",
+        123: "NTP",
+        135: "RPC",
+        139: "NetBIOS",
+        143: "IMAP",
+        161: "SNMP",
+        194: "IRC",
+        443: "HTTPS",
+        445: "Microsoft-DS",
+        993: "IMAPS",
+        995: "POP3S",
+        1723: "PPTP",
+        3306: "MySQL",
+        3389: "RDP",
+        5900: "VNC",
+        8080: "HTTP-Proxy",
+        8443: "HTTPS-Alt",
+        # Add more port-service mappings as needed
+    }
+    return common_services.get(port, "Unknown")
+
+
+def execute_custom_tool(custom_command, target_ip, target_port, evasion_flags=None):
+    """
+    Executes a custom tool command with dynamic placeholders and integrates its output.
+    
+    Args:
+        custom_command (str): Custom command with placeholders {target} and {port}.
+        target_ip (str): Target IP address.
+        target_port (int or str): Target port number.
+        evasion_flags (str, optional): Evasion flags to include in the custom tool command.
+    
+    Returns:
+        dict: Parsed output from the custom tool.
+    """
+    try:
+        # Replace placeholders with actual values
+        command = custom_command.replace("{target}", target_ip).replace("{port}", str(target_port))
+        
+        # Append evasion flags if provided
+        if evasion_flags:
+            command += f" {evasion_flags}"
+        
+        logging.info(f"Executing custom tool command: {command}")
+        
+        # Execute the command and capture the output
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=120)
+        logging.info(f"Custom tool output: {result.stdout}")
+        
+        if result.returncode != 0:
+            logging.error(f"Custom tool error output: {result.stderr}")
+            return {"error": result.stderr.strip()}
+        
+        # Parse nmap output (assuming nmap is used)
+        parsed_output = parse_nmap_output(result.stdout)
+        return parsed_output
+    
+    except subprocess.TimeoutExpired:
+        logging.error(f"Custom tool command timed out: {command}")
+        return {"error": "Command timed out"}
+    except Exception as e:
+        logging.error(f"Error executing custom tool command: {e}")
+        return {"error": "Error executing custom tool"}
+
+
+def parse_nmap_output(nmap_output):
+    """
+    Parses the output from nmap and extracts useful information.
+
+    Args:
+        nmap_output (str): Raw output from nmap.
+
+    Returns:
+        dict: Parsed scan results from nmap.
+    """
+    try:
+        scan_results = {}
+        lines = nmap_output.split('\n')
+        for line in lines:
+            if "open" in line:
+                parts = line.split()
+                port = parts[0]
+                state = parts[1]
+                service = parts[2]
+                scan_results[port] = {
+                    "nmap_state": state,
+                    "nmap_service": service
+                }
+        return scan_results
+    except Exception as e:
+        logging.error(f"Error parsing nmap output: {e}")
+        return {"error": "Error parsing nmap output"}
+
+# ---------------------------- Evasion Techniques ----------------------------
+
+# Define Evasion Functions
+def icmp_with_dns(target_ip):
+    packet = IP(dst=target_ip)/ICMP()/DNS(rd=1, qd=DNSQR(qname="example.com"))
+    return perform_covert_scan("ICMP with DNS", packet, target_ip, evasion_used="ICMP with DNS")
+
+def icmp_with_http(target_ip):
+    packet = IP(dst=target_ip)/ICMP()/Raw(load="GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+    return perform_covert_scan("ICMP with HTTP", packet, target_ip, evasion_used="ICMP with HTTP")
+
+def icmp_with_custom_data(target_ip):
+    custom_data = "Custom ICMP Data"
+    packet = IP(dst=target_ip)/ICMP()/Raw(load=custom_data)
+    return perform_covert_scan("ICMP with Custom Data", packet, target_ip, evasion_used="ICMP with Custom Data")
+
+def icmp_timestamp_request(target_ip):
+    packet = IP(dst=target_ip)/ICMP(type=13)  # Timestamp Request
+    return perform_covert_scan("ICMP Timestamp Request", packet, target_ip, evasion_used="ICMP Timestamp Request")
+
+def icmp_address_mask_request(target_ip):
+    packet = IP(dst=target_ip)/ICMP(type=17)  # Address Mask Request
+    return perform_covert_scan("ICMP Address Mask Request", packet, target_ip, evasion_used="ICMP Address Mask Request")
+
+def icmp_echo_with_random_data(target_ip):
+    random_data = ''.join(random.choices('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=64))
+    packet = IP(dst=target_ip)/ICMP()/Raw(load=random_data)
+    return perform_covert_scan("ICMP Echo with Random Data", packet, target_ip, evasion_used="ICMP Echo with Random Data")
+
+def tcp_with_http(target_ip, target_port):
+    packet = IP(dst=target_ip)/TCP(dport=target_port, flags="S")/Raw(
+        load="GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+    return perform_covert_scan("TCP with HTTP", packet, target_ip, target_port, evasion_used="TCP with HTTP")
+
+def tcp_syn_with_custom_payload(target_ip, target_port):
+    custom_payload = "Custom SYN Payload"
+    packet = IP(dst=target_ip)/TCP(dport=target_port, flags="S")/Raw(load=custom_payload)
+    return perform_covert_scan("TCP SYN with Custom Payload", packet, target_ip, target_port, evasion_used="TCP SYN with Custom Payload")
+
+def tcp_ack_with_dns(target_ip, target_port):
+    packet = IP(dst=target_ip)/TCP(dport=target_port, flags="A")/DNS(rd=1, qd=DNSQR(qname="example.com"))
+    return perform_covert_scan("TCP ACK with DNS", packet, target_ip, target_port, evasion_used="TCP ACK with DNS")
+
+def tcp_rst_with_http(target_ip, target_port):
+    packet = IP(dst=target_ip)/TCP(dport=target_port, flags="R")/Raw(
+        load="GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+    return perform_covert_scan("TCP RST with HTTP", packet, target_ip, target_port, evasion_used="TCP RST with HTTP")
+
+def tcp_fin_with_dns(target_ip, target_port):
+    packet = IP(dst=target_ip)/TCP(dport=target_port, flags="F")/DNS(rd=1, qd=DNSQR(qname="example.com"))
+    return perform_covert_scan("TCP FIN with DNS", packet, target_ip, target_port, evasion_used="TCP FIN with DNS")
+
+def tcp_urg_with_http(target_ip, target_port):
+    packet = IP(dst=target_ip)/TCP(dport=target_port, flags="U")/Raw(
+        load="GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+    return perform_covert_scan("TCP URG with HTTP", packet, target_ip, target_port, evasion_used="TCP URG with HTTP")
+
+def tcp_psh_with_dns(target_ip, target_port):
+    packet = IP(dst=target_ip)/TCP(dport=target_port, flags="P")/DNS(rd=1, qd=DNSQR(qname="example.com"))
+    return perform_covert_scan("TCP PSH with DNS", packet, target_ip, target_port, evasion_used="TCP PSH with DNS")
+
+def tcp_syn_ack_with_http(target_ip, target_port):
+    packet = IP(dst=target_ip)/TCP(dport=target_port, flags="SA")/Raw(
+        load="GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+    return perform_covert_scan("TCP SYN-ACK with HTTP", packet, target_ip, target_port, evasion_used="TCP SYN-ACK with HTTP")
+
+def tcp_with_random_data(target_ip, target_port):
+    random_data = ''.join(random.choices('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=64))
+    packet = IP(dst=target_ip)/TCP(dport=target_port, flags="S")/Raw(load=random_data)
+    return perform_covert_scan("TCP with Random Data", packet, target_ip, target_port, evasion_used="TCP with Random Data")
+
+def udp_with_dns(target_ip, target_port):
+    packet = IP(dst=target_ip)/UDP(dport=target_port)/DNS(rd=1, qd=DNSQR(qname="example.com"))
+    return perform_covert_scan("UDP with DNS", packet, target_ip, target_port, evasion_used="UDP with DNS")
+
+def udp_with_http(target_ip, target_port):
+    packet = IP(dst=target_ip)/UDP(dport=target_port)/Raw(load="GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+    return perform_covert_scan("UDP with HTTP", packet, target_ip, target_port, evasion_used="UDP with HTTP")
+
+def udp_with_custom_payload(target_ip, target_port):
+    custom_payload = "Custom UDP Payload"
+    packet = IP(dst=target_ip)/UDP(dport=target_port)/Raw(load=custom_payload)
+    return perform_covert_scan("UDP with Custom Payload", packet, target_ip, target_port, evasion_used="UDP with Custom Payload")
+
+def udp_with_icmp(target_ip, target_port):
+    packet = IP(dst=target_ip)/UDP(dport=target_port)/ICMP()
+    return perform_covert_scan("UDP with ICMP", packet, target_ip, target_port, evasion_used="UDP with ICMP")
+
+def udp_with_random_data(target_ip, target_port):
+    random_data = ''.join(random.choices('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=64))
+    packet = IP(dst=target_ip)/UDP(dport=target_port)/Raw(load=random_data)
+    return perform_covert_scan("UDP with Random Data", packet, target_ip, target_port, evasion_used="UDP with Random Data")
+
+def ai_ml_firewall_bypass(target_ip, target_port):
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
+        "Mozilla/5.0 (Linux; Android 11; Pixel 4 XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Mobile Safari/537.36"
+    ]
+    user_agent = random.choice(user_agents)
+    packet = IP(dst=target_ip)/TCP(dport=target_port, flags="S")/Raw(
+        load=f"GET / HTTP/1.1\r\nHost: {target_ip}\r\nUser-Agent: {user_agent}\r\n\r\n")
+    return perform_covert_scan("AI/ML Firewall Bypass", packet, target_ip, target_port, firewalk_used="AI/ML Firewall Bypass")
+
+def aggressive_tcp_scan(target_ip, target_port):
+    """
+    An aggressive TCP scan technique.
+    """
+    try:
+        packet = IP(dst=target_ip)/TCP(dport=target_port, flags="S")
+        responses = sr(IP(dst=target_ip)/TCP(dport=target_port, flags="S"), timeout=2, multi=True, verbose=False)
+        open_ports = 0
+        for response in responses[0]:
+            if response.haslayer(TCP) and response.getlayer(TCP).flags == 0x12:
+                open_ports += 1
+        if open_ports > 0:
+            return perform_covert_scan("Aggressive TCP Scan", packet, target_ip, target_port, evasion_used="Aggressive TCP Scan")
+        else:
+            return perform_covert_scan("Aggressive TCP Scan", packet, target_ip, target_port, evasion_used="Aggressive TCP Scan")
+    except Exception as e:
+        logging.error(f"Error performing Aggressive TCP Scan on {target_ip}:{target_port} - {e}")
+        return None
+
+def aggressive_udp_scan(target_ip, target_port):
+    """
+    An aggressive UDP scan technique.
+    """
+    try:
+        packet = IP(dst=target_ip)/UDP(dport=target_port)
+        responses = sr(IP(dst=target_ip)/UDP(dport=target_port), timeout=3, verbose=False)
+        if not responses[0]:
+            return perform_covert_scan("Aggressive UDP Scan", packet, target_ip, target_port, evasion_used="Aggressive UDP Scan")
+        else:
+            return perform_covert_scan("Aggressive UDP Scan", packet, target_ip, target_port, evasion_used="Aggressive UDP Scan")
+    except Exception as e:
+        logging.error(f"Error performing Aggressive UDP Scan on {target_ip}:{target_port} - {e}")
+        return None
+
+def aggressive_syn_scan(target_ip, target_port):
+    """
+    An aggressive SYN scan technique.
+    """
+    try:
+        packet = IP(dst=target_ip)/TCP(dport=target_port, flags="S")
+        response = sr1(packet, timeout=1, verbose=False)
+        if response and response.haslayer(TCP) and response.getlayer(TCP).flags == 0x12:
+            return perform_covert_scan("Aggressive SYN Scan", packet, target_ip, target_port, evasion_used="Aggressive SYN Scan")
+        else:
+            return perform_covert_scan("Aggressive SYN Scan", packet, target_ip, target_port, evasion_used="Aggressive SYN Scan")
+    except Exception as e:
+        logging.error(f"Error performing Aggressive SYN Scan on {target_ip}:{target_port} - {e}")
+        return None
+
+def fragmentation_attack(target_ip, target_port):
+    """
+    Performs a fragmentation attack evasion technique.
+    """
+    # Creating fragmented IP packets
+    try:
+        pkt = IP(dst=target_ip, flags='MF', frag=random.randint(0, 1000))/TCP(dport=target_port, flags="S")
+        send(pkt, count=5, verbose=False)
+        return perform_covert_scan("Fragmentation Attack", pkt, target_ip, target_port, evasion_used="Fragmentation Attack")
+    except Exception as e:
+        logging.error(f"Error performing fragmentation attack on {target_ip}:{target_port} - {e}")
+        return None
+
+def random_ttl_icmp(target_ip):
+    ttl_value = random.randint(1, 255)
+    packet = IP(dst=target_ip, ttl=ttl_value)/ICMP()
+    return perform_covert_scan("Random TTL ICMP", packet, target_ip, evasion_used="Random TTL ICMP")
+
+def tcp_window_size_manipulation(target_ip, target_port):
+    window_size = random.choice([5840, 5720, 65535, 8192, 4128])
+    packet = IP(dst=target_ip)/TCP(dport=target_port, window=window_size)
+    return perform_covert_scan("TCP Window Size Manipulation", packet, target_ip, target_port, evasion_used="TCP Window Size Manipulation")
+
+def tcp_timestamp_manipulation(target_ip, target_port):
+    # Setting arbitrary timestamp values
+    packet = IP(dst=target_ip)/TCP(dport=target_port, options=[('Timestamp', (123456789, 0))])
+    return perform_covert_scan("TCP Timestamp Manipulation", packet, target_ip, target_port, evasion_used="TCP Timestamp Manipulation")
+
+def ip_option_padding(target_ip):
+    # Adding padding options to the IP header
+    packet = IP(dst=target_ip, options=[IPOption(b'\x01' * 40)])/ICMP()
+    return perform_covert_scan("IP Option Padding", packet, target_ip, evasion_used="IP Option Padding")
+
+def tcp_flag_scan(target_ip, target_port):
+    flags = random.choice(["F", "S", "R", "P", "U"])
+    packet = IP(dst=target_ip)/TCP(dport=target_port, flags=flags)
+    return perform_covert_scan("TCP Flag Scan", packet, target_ip, target_port, evasion_used="TCP Flag Scan")
+
+def decoy_scan(target_ip, target_port):
+    # Generate a random decoy IP
+    decoy_ip = f"{random.randint(1, 255)}.{random.randint(0, 255)}.{random.randint(0, 255)}.{random.randint(1, 254)}"
+    packet = IP(dst=target_ip, src=decoy_ip)/TCP(dport=target_port, flags="S")
+    return perform_covert_scan("Decoy Scan", packet, target_ip, target_port, evasion_used="Decoy Scan")
+
+def adaptive_timing_scan(target_ip, target_port):
+    # Introduce random delays to evade detection
+    delay = random.uniform(0.5, 5.0)
+    logging.info(f"Adaptive Timing Scan: Sleeping for {delay:.2f} seconds before scanning.")
+    time.sleep(delay)
+    packet = IP(dst=target_ip)/TCP(dport=target_port, flags="S")
+    return perform_covert_scan("Adaptive Timing Scan", packet, target_ip, target_port, evasion_used="Adaptive Timing Scan")
+
+def mixed_protocol_scan(target_ip):
+    # Mix TCP, UDP, and ICMP protocols in the scan
+    protocols = [TCP(dport=80), UDP(dport=80), ICMP()]
+    chosen_protocol = random.choice(protocols)
+    packet = IP(dst=target_ip)/chosen_protocol
+    if isinstance(chosen_protocol, TCP):
+        packet /= Raw(load="GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+    return perform_covert_scan("Mixed Protocol Scan", packet, target_ip, evasion_used="Mixed Protocol Scan")
+
+def tcp_syn_flood(target_ip, target_port):
+    # Send a flood of SYN packets
+    try:
+        packet = IP(dst=target_ip)/TCP(dport=target_port, flags="S")
+        send(packet, count=500, inter=0.001, verbose=False)
+        return perform_covert_scan("TCP SYN Flood", packet, target_ip, target_port, evasion_used="TCP SYN Flood")
+    except Exception as e:
+        logging.error(f"Error performing TCP SYN Flood on {target_ip}:{target_port} - {e}")
+        return None
+
+def randomized_payload_scan(target_ip, target_port):
+    # Send packets with randomized payloads to evade detection
+    payload = ''.join(random.choices('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=128))
+    packet = IP(dst=target_ip)/TCP(dport=target_port)/Raw(load=payload)
+    return perform_covert_scan("Randomized Payload Scan", packet, target_ip, target_port, evasion_used="Randomized Payload Scan")
+
+# ---------------------------- Custom Scan Techniques ----------------------------
+
+# (Additional custom scan techniques can be added here as needed)
+
+# ---------------------------- Side-Channel Analysis Functions ----------------------------
+
+def detect_device(os_detected, firewall_detected):
+    """
+    Detects the device based on OS and Firewall detection.
+
+    Args:
+        os_detected (str): Detected operating system.
+        firewall_detected (str): Detected firewall.
+
+    Returns:
+        str: Device name or 'Unknown Device'.
+    """
+    for device in DEVICE_SIGNATURES:
+        if os_detected == device["os"] and device["firewall"] in firewall_detected:
+            return device["name"]
+    return "Unknown Device"
+
+# ---------------------------- Scan Functions ----------------------------
+
+def perform_covert_scan(scan_type, packet, target_ip, target_port=None, evasion_used=None, firewalk_used=None, custom_tool_command=None):
+    """
+    Executes a covert scan and returns the scan result. Stores the result in the database.
+
+    Args:
+        scan_type (str): Type of scan being performed.
+        packet (Packet): Scapy packet to send.
+        target_ip (str): Target IP address.
+        target_port (int, optional): Target port number.
+        evasion_used (str, optional): Evasion technique used.
+        firewalk_used (str, optional): Firewalk technique used.
+        custom_tool_command (str, optional): Custom tool command executed.
+
+    Returns:
+        dict: Scan result details.
+    """
+    try:
+        logging.info(f"Performing {scan_type} on {target_ip}:{target_port if target_port else ''}")
+        response = sr1(packet, timeout=2, verbose=False)
+
+        # Measure response time
+        response_time = measure_response_time(packet)
+
+        # Analyze response
+        if response:
+            response_summary = response.summary()
+            port_status = determine_port_status(response, target_port)
+            echo_reply_status = detect_icmp_echo_reply(response) if scan_type.startswith("icmp") else "N/A"
+            segment_status, segment_ip = detect_segment(response)
+            ids_ips_status = detect_ids_ips(response)
+            os_detected = infer_os(response.ttl, response.getlayer(TCP).window) if response.haslayer(TCP) else infer_os(response.ttl, 0)
+            firewall_detected = detect_firewall(response)
+            device_detected = detect_device(os_detected, firewall_detected)
+            icmp_type, icmp_code = detect_icmp_details(response)
+        else:
+            response_summary = "No response"
+            port_status = "Closed/Filtered"
+            echo_reply_status = "N/A"
+            segment_status, segment_ip = "No Segment Detected", None
+            ids_ips_status = "No IDS/IPS Detected"
+            os_detected = "Unknown"
+            firewall_detected = "No Present"
+            device_detected = "Unknown Device"
+            icmp_type, icmp_code = (None, None)
+
+        # Execute and integrate custom tool output if provided
+        custom_tool_output = "N/A"
+        if custom_tool_command:
+            custom_tool_output = execute_custom_tool(custom_tool_command, target_ip, target_port)
+        
+        # Prepare scan result
+        scan_result = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "target_ip": target_ip,
+            "target_port": target_port,
+            "scan_type": scan_type,
+            "response_summary": response_summary,
+            "port_status": port_status,
+            "os_detected": os_detected,
+            "ttl": response.ttl if response else None,
+            "evasion_used": evasion_used or "No",
+            "firewalk_used": firewalk_used or "No",
+            "segment_detected": segment_status,
+            "segment_ip": segment_ip or "N/A",
+            "ids_ips_detection": ids_ips_status,
+            "echo_reply_status": echo_reply_status,
+            "custom_tool_output": custom_tool_output,
+            "firewall_detected": firewall_detected,
+            "device_detected": device_detected,
+            "response_time": response_time if response_time else "N/A",
+            "icmp_type": icmp_type,
+            "icmp_code": icmp_code
+        }
+
+        # Store scan result in the database
+        store_scan_result(scan_result)
+
+        return scan_result
+    except Exception as e:
+        logging.error(f"Error performing scan {scan_type} on {target_ip}:{target_port} - {e}")
+        return {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "target_ip": target_ip,
+            "target_port": target_port,
+            "scan_type": scan_type,
+            "response_summary": "Error",
+            "port_status": "Unknown",
+            "os_detected": "Unknown",
+            "ttl": None,
+            "evasion_used": evasion_used or "No",
+            "firewalk_used": firewalk_used or "No",
+            "segment_detected": "Unknown",
+            "segment_ip": "Unknown",
+            "ids_ips_detection": "Unknown",
+            "echo_reply_status": "N/A",
+            "custom_tool_output": "Error",
+            "firewall_detected": "Unknown",
+            "device_detected": "Unknown Device",
+            "response_time": "N/A",
+            "icmp_type": None,
+            "icmp_code": None
+        }
+
+
+def determine_port_status(response, target_port):
+    """
+    Determines the status of the port based on the response.
+
+    Args:
+        response (Packet): Response packet from the target.
+        target_port (int): Target port number.
+
+    Returns:
+        str: Port status.
+    """
+    if not response:
+        return "Closed/Filtered"
+    elif response.haslayer(TCP):
+        flags = response.getlayer(TCP).flags
+        if flags == 0x12:  # SYN-ACK
+            # Send RST to gracefully close the connection
+            send_rst(response)
+            return "Open"
+        elif flags == 0x14:  # RST
+            return "Closed"
+    elif response.haslayer(ICMP):
+        icmp_layer = response.getlayer(ICMP)
+        if icmp_layer.type == 3 and icmp_layer.code in [1, 2, 3, 9, 10, 13]:
+            return "Filtered"
+    return "Open/Filtered"
+
+def send_rst(response):
+    """
+    Sends a RST packet to gracefully close an open TCP connection.
+
+    Args:
+        response (Packet): Response packet with SYN-ACK flags.
+    """
+    if response.haslayer(TCP):
+        rst_packet = IP(dst=response[IP].src, src=response[IP].dst)/TCP(dport=response[TCP].sport, sport=response[TCP].dport, flags="R")
+        send(rst_packet, verbose=False)
+
+def detect_icmp_echo_reply(response):
+    """
+    Detects if an ICMP Echo Reply was received with or without payload.
+
+    Args:
+        response (Packet): Response packet from the target.
+
+    Returns:
+        str: Echo reply status.
+    """
+    if response and response.haslayer(ICMP):
+        icmp_layer = response.getlayer(ICMP)
+        if icmp_layer.type == 0:  # Echo reply
+            raw_layer = response.getlayer(Raw)
+            if raw_layer and raw_layer.load:
+                return "Echo Reply with Payload"
+            else:
+                return "Echo Reply without Payload"
+    return "No Echo Reply"
+
+def detect_segment(response):
+    """
+    Detects if the response reveals a network segment.
+
+    Args:
+        response (Packet): Response packet from the target.
+
+    Returns:
+        tuple: (Segment Status, Segment IP)
+    """
+    try:
+        if response and response.haslayer(IP):
+            return "Segment Detected", response[IP].src
+        else:
+            return "No Segment Detected", None
+    except Exception as e:
+        logging.error(f"Error detecting segment: {e}")
+        return "Unknown", None
+
+def detect_ids_ips(response):
+    """
+    Detects if an IDS/IPS or Firewall is present based on the response.
+
+    Args:
+        response (Packet): Response packet from the target.
+
+    Returns:
+        str: Detection status.
+    """
+    try:
+        firewall_detection = detect_firewall(response)
+        if firewall_detection != "No Present":
+            return firewall_detection
+        if response and response.haslayer(ICMP):
+            return "IDS/IPS Detected"
+        elif response and response.haslayer(TCP) and response.getlayer(TCP).flags == 0x14:  # RST
+            return "Present"
+        else:
+            return "No IDS/IPS Detected"
+    except Exception as e:
+        logging.error(f"Error detecting IDS/IPS: {e}")
+        return "Unknown"
+
+def store_scan_result(scan_result):
+    """
+    Stores the scan result in the SQLite database.
+
+    Args:
+        scan_result (dict): Dictionary containing scan result details.
+    """
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO scan_results (
+                timestamp,
+                target_ip,
+                target_port,
+                scan_type,
+                response_summary,
+                port_status,
+                os_detected,
+                ttl,
+                evasion_used,
+                firewalk_used,
+                segment_detected,
+                segment_ip,
+                ids_ips_detection,
+                echo_reply_status,
+                custom_tool_output,
+                firewall_detected,
+                device_detected
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            scan_result["timestamp"],
+            scan_result["target_ip"],
+            scan_result["target_port"],
+            scan_result["scan_type"],
+            scan_result["response_summary"],
+            scan_result["port_status"],
+            scan_result["os_detected"],
+            scan_result["ttl"],
+            scan_result["evasion_used"],
+            scan_result["firewalk_used"],
+            scan_result["segment_detected"],
+            scan_result["segment_ip"],
+            scan_result["ids_ips_detection"],
+            scan_result["echo_reply_status"],
+            scan_result["custom_tool_output"],
+            scan_result["firewall_detected"],
+            scan_result["device_detected"]
+        ))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.error(f"Error storing scan result in database: {e}")
+
+# ---------------------------- AI/ML Functions ----------------------------
+
+def adaptive_scanning(scan_results, scan_functions, evasion_functions, target_ports, executor):
+    """
+    Adaptive scanning based on AI/ML model.
+    Adjusts scanning techniques based on previous scan results to improve efficiency.
+
+    Args:
+        scan_results (list): List of scan result dictionaries.
+        scan_functions (dict): Dictionary mapping scan names to functions.
+        evasion_functions (dict): Dictionary mapping evasion names to functions.
+        target_ports (list): List of target ports.
+        executor (ThreadPoolExecutor): Thread pool executor for concurrent scanning.
+    """
+    if adaptive_model:
+        logging.info("Running adaptive scanning based on AI/ML model.")
+
+        # Extract features from scan_results
+        features = []
+        for result in scan_results:
+            feature = [
+                result.get("port_status"),
+                result.get("ids_ips_detection"),
+                result.get("segment_detected")
+            ]
+            features.append(feature)
+
+        try:
+            # Predict recommendations (assuming the model returns a list of recommended scan technique names)
+            recommended_scans = adaptive_model.predict(features)
+            logging.info(f"Adaptive Scanning Recommendations: {recommended_scans}")
+
+            # Iterate over scan_results and apply recommended scans
+            for result, recommendation in zip(scan_results, recommended_scans):
+                target_ip = result.get("target_ip")
+                target_port = result.get("target_port")
+
+                # Check if recommendation is a valid scan technique
+                if recommendation in scan_functions:
+                    scan_func = scan_functions.get(recommendation)
+                    if scan_func:
+                        if scan_func.__code__.co_argcount == 1:
+                            executor.submit(scan_func, target_ip)
+                        elif scan_func.__code__.co_argcount == 2:
+                            if target_port:
+                                executor.submit(scan_func, target_ip, target_port)
+                elif recommendation in evasion_functions:
+                    ev_func = evasion_functions.get(recommendation)
+                    if ev_func:
+                        if ev_func.__code__.co_argcount == 1:
+                            executor.submit(ev_func, target_ip)
+                        elif ev_func.__code__.co_argcount == 2:
+                            if target_port:
+                                executor.submit(ev_func, target_ip, target_port)
+
+        except Exception as e:
+            logging.error(f"Error during adaptive scanning: {e}")
+    else:
+        logging.warning("Adaptive model not loaded. Skipping adaptive scanning.")
+
+def detect_false_positives(scan_results):
+    """
+    Detect and filter out false positives using AI/ML model.
+
+    Args:
+        scan_results (list): List of scan result dictionaries.
+    """
+    if false_positive_model:
+        logging.info("Detecting false positives using AI/ML model.")
+
+        # Extract features from scan_results
+        features = []
+        for result in scan_results:
+            feature = [
+                result.get("port_status"),
+                result.get("ids_ips_detection"),
+                result.get("segment_detected")
+            ]
+            features.append(feature)
+
+        try:
+            # Predict whether each result is a false positive (True) or not (False)
+            is_false_positive = false_positive_model.predict(features)
+            # Filter out false positives
+            original_count = len(scan_results)
+            scan_results[:] = [res for res, fp in zip(scan_results, is_false_positive) if not fp]
+            filtered_count = original_count - len(scan_results)
+            logging.info(f"Filtered out {filtered_count} false positives.")
+        except Exception as e:
+            logging.error(f"Error during false positive detection: {e}")
+    else:
+        logging.warning("False positive model not loaded. Skipping false positive detection.")
+
+# ---------------------------- Scan Functions Mapping ----------------------------
+
+# Map scan technique names to functions
+SCAN_FUNCTIONS = {
+    "icmp_with_dns": icmp_with_dns,
+    "icmp_with_http": icmp_with_http,
+    "icmp_with_custom_data": icmp_with_custom_data,
+    "icmp_timestamp_request": icmp_timestamp_request,
+    "icmp_address_mask_request": icmp_address_mask_request,
+    "icmp_echo_with_random_data": icmp_echo_with_random_data,
+    "tcp_with_http": tcp_with_http,
+    "tcp_syn_with_custom_payload": tcp_syn_with_custom_payload,
+    "tcp_ack_with_dns": tcp_ack_with_dns,
+    "tcp_rst_with_http": tcp_rst_with_http,
+    "tcp_fin_with_dns": tcp_fin_with_dns,
+    "tcp_urg_with_http": tcp_urg_with_http,
+    "tcp_psh_with_dns": tcp_psh_with_dns,
+    "tcp_syn_ack_with_http": tcp_syn_ack_with_http,
+    "tcp_with_random_data": tcp_with_random_data,
+    "udp_with_dns": udp_with_dns,
+    "udp_with_http": udp_with_http,
+    "udp_with_custom_payload": udp_with_custom_payload,
+    "udp_with_icmp": udp_with_icmp,
+    "udp_with_random_data": udp_with_random_data,
+    "ai_ml_firewall_bypass": ai_ml_firewall_bypass,
+    "aggressive_tcp_scan": aggressive_tcp_scan,
+    "aggressive_udp_scan": aggressive_udp_scan,
+    "aggressive_syn_scan": aggressive_syn_scan
+}
+
+# Map evasion technique names to functions
+EVASION_FUNCTIONS = {
+    "random_ttl_icmp": random_ttl_icmp,
+    "tcp_window_size_manipulation": tcp_window_size_manipulation,
+    "tcp_timestamp_manipulation": tcp_timestamp_manipulation,
+    "ip_option_padding": ip_option_padding,
+    "tcp_flag_scan": tcp_flag_scan,
+    "decoy_scan": decoy_scan,
+    "adaptive_timing_scan": adaptive_timing_scan,
+    "mixed_protocol_scan": mixed_protocol_scan,
+    "tcp_syn_flood": tcp_syn_flood,
+    "randomized_payload_scan": randomized_payload_scan,
+    "fragmentation_attack": fragmentation_attack
+}
+
+# ---------------------------- Argument Parsing ----------------------------
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="""
+Next-Generation Port Scanner
+
+Developed by Haroon Ahmad Awan (haroon@cyberzeus.pk)
+
+Core Features:
+    - Advanced scanning techniques
+    - AI/ML integration for intelligent scanning
+    - Reporting with colored outputs
+    - Custom tool integration with dynamic placeholders
+    - Deep Packet Inspection (DPI) capabilities
+    - Comprehensive evasion techniques to bypass firewalls and IDS/IPS
+""",
+        usage='''
+    python next-generation-portscan.py --target <IP_ADDRESS> --ports <PORTS> [options]
+
+Examples:
+    python next-generation-portscan.py --target 192.168.1.1 --ports 80,443 --scans tcp_with_http udp_with_dns
+    python next-generation-portscan.py --target 192.168.1.1,192.168.1.2 --ports 22,80,443 --config config.json --customtool "nmap -sV -p {port} {target}"
+    python next-generation-portscan.py --help
+''',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False  # Disable the default help to prevent conflict
+    )
+    # Custom Help Argument
+    parser.add_argument('-h', '--help', action='help',
+                        default=argparse.SUPPRESS,
+                        help='Show this help message and exit')
+
+    # Hidden Arguments for Listing Scans and Evasions
+    parser.add_argument('--list-scans', action='store_true',
+                        help=argparse.SUPPRESS)  # Hide from main help
+    parser.add_argument('--list-evasions', action='store_true',
+                        help=argparse.SUPPRESS)  # Hide from main help
+
+    # Main Functional Arguments
+    parser.add_argument('--target', required=False,
+                        help='Target IP address (comma-separated for multiple targets).')
+    parser.add_argument('--ports', required=False,
+                        help='Comma-separated list of target ports (for TCP/UDP scans).')
+    parser.add_argument('--threads', type=int, default=10,
+                        help='Number of threads to use for scanning.')
+    parser.add_argument('--scans-per-port', type=int, default=3,
+                        help='Number of scan techniques to apply per port.')
+    parser.add_argument('--scans', metavar='SCAN', type=str, nargs='+',
+                        help='Specific scan techniques to execute by name or "all" to include all scans. Use --list-scans for available scans.')
+    parser.add_argument('--evasion', metavar='EVASION', type=str, nargs='+',
+                        help='Enable specific evasion techniques by name or "all" to include all evasions. Use --list-evasions for available evasions.')
+    parser.add_argument('--firewalk', action='store_true',
+                        help='Enable AI/ML firewall bypass techniques.')
+    parser.add_argument('--customtool', type=str,
+                        help='Custom tool command to execute. Use placeholders {target} and {port} for dynamic values.')
+    parser.add_argument('--dpi', action='store_true',
+                        help='Enable deep packet inspection techniques.')
+    parser.add_argument('--output', type=str,
+                        help='Output format: nmap, json, etc.', default='nmap')
+    parser.add_argument('--config', type=str,
+                        help='Path to configuration JSON file.')
+
+    args = parser.parse_args()
+
+    # Handle listing scans
+    if args.list_scans:
+        print(Fore.YELLOW + "Available Scan Techniques:" + Style.RESET_ALL)
+        for scan in AVAILABLE_SCANS:
+            print(f"- {scan}")
+        parser.exit()
+
+    # Handle listing evasions
+    if args.list_evasions:
+        print(Fore.YELLOW + "Available Evasion Techniques:" + Style.RESET_ALL)
+        for evasion in AVAILABLE_EVASIONS:
+            print(f"- {evasion}")
+        parser.exit()
+
+    # Validate required arguments if not listing scans/evasions
+    if not args.list_scans and not args.list_evasions:
+        if not args.target or not args.ports:
+            parser.error("the following arguments are required: --target, --ports")
+
+    # Parse targets and ports
+    targets = [ip.strip() for ip in args.target.split(',')] if args.target else []
+    try:
+        target_ports = [int(port.strip()) for port in args.ports.split(',')] if args.ports else []
+    except ValueError:
+        print(Fore.RED + "\nError: Ports must be integers." + Style.RESET_ALL)
+        parser.exit(1)
+
+    # Handle 'all' for scans
+    if args.scans and 'all' in [scan.lower() for scan in args.scans]:
+        args.scans = AVAILABLE_SCANS.copy()
+
+    # Handle 'all' for evasions
+    if args.evasion and 'all' in [ev.lower() for ev in args.evasion]:
+        args.evasion = AVAILABLE_EVASIONS.copy()
+
+    # Optional: Validate scans and evasions manually
+    if args.scans:
+        invalid_scans = [scan for scan in args.scans if scan not in AVAILABLE_SCANS]
+        if invalid_scans:
+            print(Fore.RED + f"\nError: Invalid scan techniques: {', '.join(invalid_scans)}" + Style.RESET_ALL)
+            print("Use --list-scans to view available scan techniques.")
+            sys.exit(1)
+
+    if args.evasion:
+        invalid_evasions = [ev for ev in args.evasion if ev not in AVAILABLE_EVASIONS]
+        if invalid_evasions:
+            print(Fore.RED + f"\nError: Invalid evasion techniques: {', '.join(invalid_evasions)}" + Style.RESET_ALL)
+            print("Use --list-evasions to view available evasion techniques.")
+            sys.exit(1)
+
+    return (
+        targets,
+        target_ports,
+        args.threads,
+        args.scans_per_port,
+        args.scans,
+        args.evasion,
+        args.firewalk,
+        args.customtool,
+        args.dpi,
+        args.output,
+        args.config
+    )
+
+# ---------------------------- Configuration Loading ----------------------------
+
+def calculate_weighting(scan_results):
+    """
+    Calculates the total weighting based on scan results to determine configuration quality.
+    Each attribute is assigned a weight, and the sum of all weights determines the overall quality.
+
+    Args:
+        scan_results (list): List of dictionaries containing scan result details.
+
+    Returns:
+        int: Total weight representing configuration quality.
+    """
+    weights = {
+        "Open": -2,
+        "Closed": -1,
+        "Filtered": 0,
+        "Open/Filtered": -1,
+        "Closed/Filtered": 0,
+        "Segment Detected": 1,
+        "TCP Segment Detected": 1,
+        "No Segment Detected": -1,
+        "IDS/IPS Detected": 2,
+        "Present": 2,
+        "No IDS/IPS Detected": -1
+    }
+
+    total_weight = 0
+    for result in scan_results:
+        port_status = result.get("port_status", "Unknown")
+        segment_status = result.get("segment_detected", "Unknown")
+        ids_ips_status = result.get("ids_ips_detection", "Unknown")
+
+        # Add weights based on port status
+        total_weight += weights.get(port_status, 0)
+
+        # Add weights based on segment detection
+        total_weight += weights.get(segment_status, 0)
+
+        # Add weights based on IDS/IPS or Firewall detection
+        total_weight += weights.get(ids_ips_status, 0)
+
+    return total_weight
+
+def load_config(config_path):
+    """
+    Loads configuration from a JSON file if provided.
+
+    Args:
+        config_path (str): Path to the configuration JSON file.
+
+    Returns:
+        dict: Configuration dictionary.
+    """
+    if not config_path:
+        return {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                logging.info(f"Loaded configuration from {config_path}")
+                return config
+        except Exception as e:
+            logging.error(f"Error loading configuration file: {e}")
+            print(Fore.RED + f"Error loading configuration file: {e}" + Style.RESET_ALL)
+            sys.exit(1)
+    else:
+        logging.error(f"Configuration file {config_path} does not exist.")
+        print(Fore.RED + f"Configuration file {config_path} does not exist." + Style.RESET_ALL)
+        sys.exit(1)
+
+# ---------------------------- Reporting Functions ----------------------------
+
+def print_scan_results(scan_results, dpi_results, output_format='nmap'):
+    """
+    Prints scan results in the specified output format with enhanced technical details.
+
+    Args:
+        scan_results (list): List of dictionaries containing scan result details.
+        dpi_results (dict): Dictionary containing DPI result details.
+        output_format (str): Output format ('nmap', 'json', etc.).
+    """
+    if output_format.lower() == 'json':
+        print(json.dumps(scan_results, indent=4))
+        return
+
+    # Organize results per target IP and port
+    organized_results = {}
+    for item in scan_results:
+        target_ip = item.get("target_ip")
+        target_port = item.get("target_port", "N/A")
+        if target_ip not in organized_results:
+            organized_results[target_ip] = {
+                "latency": item.get("latency", "Unknown"),
+                "os_info": item.get("os_detected", "Unknown"),
+                "firewall_status": item.get("firewall_detected", "Unknown"),
+                "device_info": item.get("device_detected", "Unknown"),
+                "ids_ips_detection": item.get("ids_ips_detection", "Unknown"),
+                "ports": {}
+            }
+        organized_results[target_ip]["ports"][target_port] = item
+
+    # Define table headers
+    headers = [
+        Fore.CYAN + "Port" + Style.RESET_ALL,
+        Fore.CYAN + "State" + Style.RESET_ALL,
+        Fore.CYAN + "Service" + Style.RESET_ALL,
+        Fore.CYAN + "Evasion Used" + Style.RESET_ALL,
+        Fore.CYAN + "Firewalk Used" + Style.RESET_ALL,
+        Fore.CYAN + "Segment Detected" + Style.RESET_ALL,
+        Fore.CYAN + "Segment IP" + Style.RESET_ALL,
+        Fore.CYAN + "Firewall Detection" + Style.RESET_ALL,
+        Fore.CYAN + "Echo Reply Status" + Style.RESET_ALL,
+        Fore.CYAN + "Custom Tool Output" + Style.RESET_ALL
+    ]
+
+    for target_ip, details in organized_results.items():
+
+        # Prepare table data
+        table = []
+        for port, port_details in details["ports"].items():
+            # Determine service name based on port
+            service = get_service_name(port) if isinstance(port, int) else port
+
+            # Color-code the state
+            state = port_details.get("port_status", "Unknown")
+            if state == "Open":
+                state_colored = Fore.GREEN + state + Style.RESET_ALL
+            elif state == "Closed":
+                state_colored = Fore.RED + state + Style.RESET_ALL
+            elif state == "Filtered":
+                state_colored = Fore.YELLOW + state + Style.RESET_ALL
+            else:
+                state_colored = state
+
+            # Highlight IDS/IPS and Firewall detections
+            ids_ips_status = port_details.get("ids_ips_detection", "Unknown")
+            if "Firewall" in ids_ips_status or "IDS/IPS" in ids_ips_status:
+                ids_ips_colored = Fore.MAGENTA + ids_ips_status + Style.RESET_ALL
+            else:
+                ids_ips_colored = ids_ips_status
+
+            # Additional Technical Details
+            os_detected = port_details.get("os_detected", "N/A")
+            device_detected = port_details.get("device_detected", "N/A")
+
+            row = [
+                f"{port}/tcp" if isinstance(port, int) else port,
+                state_colored,
+                service,
+                port_details.get("evasion_used", "No"),
+                port_details.get("firewalk_used", "No"),
+                port_details.get("segment_detected", "Unknown"),
+                port_details.get("segment_ip", "N/A"),
+                ids_ips_colored,
+                port_details.get("echo_reply_status", "N/A"),
+                port_details.get("custom_tool_output", "N/A")
+            ]
+            table.append(row)
+
+        # Print table
+        print(tabulate(table, headers=headers, tablefmt="fancy_grid"))
+        print("\n")
+
+    # DPI Results
+    if dpi_results:
+        print(Fore.GREEN + "Deep Packet Inspection Results:" + Style.RESET_ALL + "\n")
+        dpi_headers = [
+            "Attack Type",
+            "Detected",
+            "Current Network Status"
+        ]
+
+        dpi_table = []
+        for attack_type, detected in dpi_results.items():
+            current_status = Fore.RED + "Happening" + Style.RESET_ALL if detected else Fore.GREEN + "Not Happening" + Style.RESET_ALL
+            detected_status = Fore.RED + "Yes" + Style.RESET_ALL if detected else Fore.GREEN + "No" + Style.RESET_ALL
+            dpi_table.append([attack_type, detected_status, current_status])
+
+        if dpi_table:
+            print(tabulate(dpi_table, headers=dpi_headers, tablefmt="fancy_grid"))
+        else:
+            print("No DPI results to display.")
+    else:
+        print("\nNo DPI results to display.")
+
+    # Summary Section
+    summarize_ports(scan_results)
+
+def summarize_ports(scan_results):
+    """
+    Summarizes ports based on IDS/IPS and Firewall detections.
+
+    Args:
+        scan_results (list): List of scan result dictionaries.
+    """
+    ports_with_ids_ips_fw = set()
+    ports_without_ids_ips_fw = set()
+
+    for result in scan_results:
+        target_ip = result.get("target_ip")
+        segment_ip = result.get("segment_ip") if result.get("segment_ip") else "None"
+        ids_ips_status = result.get("ids_ips_detection", "Unknown")
+
+        if ids_ips_status in ["IDS/IPS Detected", "Present"]:
+            ports_with_ids_ips_fw.add((target_ip, segment_ip))
+        else:
+            ports_without_ids_ips_fw.add((target_ip, segment_ip))
+
+    print("\n" + Fore.YELLOW + "Summary of Ports:" + Style.RESET_ALL)
+    print("\n" + Fore.GREEN + "Ports behind IDS/IPS/FW:" + Style.RESET_ALL)
+    if ports_with_ids_ips_fw:
+        for ip, segment in ports_with_ids_ips_fw:
+            print(f"{ip} (Segment: {segment})")
+    else:
+        print("None detected.")
+
+    print("\n" + Fore.GREEN + "Ports without IDS/IPS/FW:" + Style.RESET_ALL)
+    if ports_without_ids_ips_fw:
+        for ip, segment in ports_without_ids_ips_fw:
+            print(f"{ip} (Segment: {segment})")
+    else:
+        print("None detected.")
+
+# ---------------------------- AI/ML Functions ----------------------------
+
+def adaptive_scanning(scan_results, scan_functions, evasion_functions, target_ports, executor):
+    """
+    Adaptive scanning based on AI/ML model.
+    Adjusts scanning techniques based on previous scan results to improve efficiency.
+
+    Args:
+        scan_results (list): List of scan result dictionaries.
+        scan_functions (dict): Dictionary mapping scan names to functions.
+        evasion_functions (dict): Dictionary mapping evasion names to functions.
+        target_ports (list): List of target ports.
+        executor (ThreadPoolExecutor): Thread pool executor for concurrent scanning.
+    """
+    if adaptive_model:
+        logging.info("Running adaptive scanning based on AI/ML model.")
+
+        # Extract features from scan_results
+        features = []
+        for result in scan_results:
+            feature = [
+                result.get("port_status"),
+                result.get("ids_ips_detection"),
+                result.get("segment_detected")
+            ]
+            features.append(feature)
+
+        try:
+            # Predict recommendations (assuming the model returns a list of recommended scan technique names)
+            recommended_scans = adaptive_model.predict(features)
+            logging.info(f"Adaptive Scanning Recommendations: {recommended_scans}")
+
+            # Iterate over scan_results and apply recommended scans
+            for result, recommendation in zip(scan_results, recommended_scans):
+                target_ip = result.get("target_ip")
+                target_port = result.get("target_port")
+
+                # Check if recommendation is a valid scan technique
+                if recommendation in scan_functions:
+                    scan_func = scan_functions.get(recommendation)
+                    if scan_func:
+                        if scan_func.__code__.co_argcount == 1:
+                            executor.submit(scan_func, target_ip)
+                        elif scan_func.__code__.co_argcount == 2:
+                            if target_port:
+                                executor.submit(scan_func, target_ip, target_port)
+                elif recommendation in evasion_functions:
+                    ev_func = evasion_functions.get(recommendation)
+                    if ev_func:
+                        if ev_func.__code__.co_argcount == 1:
+                            executor.submit(ev_func, target_ip)
+                        elif ev_func.__code__.co_argcount == 2:
+                            if target_port:
+                                executor.submit(ev_func, target_ip, target_port)
+
+        except Exception as e:
+            logging.error(f"Error during adaptive scanning: {e}")
+    else:
+        logging.warning("Adaptive model not loaded. Skipping adaptive scanning.")
+
+def detect_false_positives(scan_results):
+    """
+    Detect and filter out false positives using AI/ML model.
+
+    Args:
+        scan_results (list): List of scan result dictionaries.
+    """
+    if false_positive_model:
+        logging.info("Detecting false positives using AI/ML model.")
+
+        # Extract features from scan_results
+        features = []
+        for result in scan_results:
+            feature = [
+                result.get("port_status"),
+                result.get("ids_ips_detection"),
+                result.get("segment_detected")
+            ]
+            features.append(feature)
+
+        try:
+            # Predict whether each result is a false positive (True) or not (False)
+            is_false_positive = false_positive_model.predict(features)
+            # Filter out false positives
+            original_count = len(scan_results)
+            scan_results[:] = [res for res, fp in zip(scan_results, is_false_positive) if not fp]
+            filtered_count = original_count - len(scan_results)
+            logging.info(f"Filtered out {filtered_count} false positives.")
+        except Exception as e:
+            logging.error(f"Error during false positive detection: {e}")
+    else:
+        logging.warning("False positive model not loaded. Skipping false positive detection.")
+
+# ---------------------------- Deep Packet Inspection ----------------------------
+
+def deep_packet_inspection(packet):
+    """
+    Performs deep packet inspection to detect various network attacks.
+
+    Args:
+        packet (Packet): Scapy packet to inspect.
+
+    Returns:
+        dict: Dictionary containing DPI results.
+    """
+    try:
+        result = {
+            "MITM": False,
+            "Session Hijacking": False,
+            "Malformed Packets": False,
+            "IP Spoofing": False,
+            "DNS Spoofing": False,
+            "Arp Spoofing": False,
+            "TCP SYN Flood": False,
+            "UDP Flood": False,
+            "ICMP Flood": False,
+            "Fragmentation Attack": False
+        }
+
+        # Inspect packet for common attack signatures
+        if packet.haslayer(TCP):
+            tcp_layer = packet.getlayer(TCP)
+            if tcp_layer.flags == 0x12:  # SYN-ACK
+                result["MITM"] = True
+            elif tcp_layer.flags == 0x14:  # RST
+                result["Session Hijacking"] = True
+
+        if packet.haslayer(IP):
+            ip_layer = packet.getlayer(IP)
+            if ip_layer.flags == 1:  # Don't Fragment
+                result["Fragmentation Attack"] = True
+
+        if packet.haslayer(DNS):
+            dns_layer = packet.getlayer(DNS)
+            if dns_layer.qr == 1:  # Response
+                result["DNS Spoofing"] = True
+
+        # Simulated checks for other types (replace with actual detection logic)
+        result["Malformed Packets"] = random.choice([True, False])
+        result["IP Spoofing"] = random.choice([True, False])
+        result["Arp Spoofing"] = random.choice([True, False])
+        result["TCP SYN Flood"] = random.choice([True, False])
+        result["UDP Flood"] = random.choice([True, False])
+        result["ICMP Flood"] = random.choice([True, False])
+
+        return result
+    except Exception as e:
+        logging.error(f"Error performing deep packet inspection: {e}")
+        return None
+
+# ---------------------------- Reporting Functions ----------------------------
+
+def print_scan_results(scan_results, dpi_results, output_format='nmap'):
+    """
+    Prints scan results in the specified output format with enhanced technical details.
+
+    Args:
+        scan_results (list): List of dictionaries containing scan result details.
+        dpi_results (dict): Dictionary containing DPI result details.
+        output_format (str): Output format ('nmap', 'json', etc.).
+    """
+    if output_format.lower() == 'json':
+        print(json.dumps(scan_results, indent=4))
+        return
+
+    # Organize results per target IP and port
+    organized_results = {}
+    for item in scan_results:
+        target_ip = item.get("target_ip")
+        target_port = item.get("target_port", "N/A")
+        if target_ip not in organized_results:
+            organized_results[target_ip] = {
+                "latency": item.get("latency", "Unknown"),
+                "os_info": item.get("os_detected", "Unknown"),
+                "firewall_status": item.get("firewall_detected", "Unknown"),
+                "device_info": item.get("device_detected", "Unknown"),
+                "ids_ips_detection": item.get("ids_ips_detection", "Unknown"),
+                "ports": {}
+            }
+        organized_results[target_ip]["ports"][target_port] = item
+
+    # Define table headers
+    headers = [
+        Fore.CYAN + "Port" + Style.RESET_ALL,
+        Fore.CYAN + "State" + Style.RESET_ALL,
+        Fore.CYAN + "Service" + Style.RESET_ALL,
+        Fore.CYAN + "Evasion Used" + Style.RESET_ALL,
+        Fore.CYAN + "Firewalk Used" + Style.RESET_ALL,
+        Fore.CYAN + "Segment Detected" + Style.RESET_ALL,
+        Fore.CYAN + "Segment IP" + Style.RESET_ALL,
+        Fore.CYAN + "Firewall Detection" + Style.RESET_ALL,
+        Fore.CYAN + "Echo Reply Status" + Style.RESET_ALL,
+        Fore.CYAN + "Custom Tool Output" + Style.RESET_ALL
+    ]
+
+    for target_ip, details in organized_results.items():
+        # Header for each target
+        print(Fore.GREEN + f"Ng-PortScan Scan Report for {target_ip}" + Style.RESET_ALL)
+        print(f"Host Status: {Fore.GREEN}Online{Style.RESET_ALL} (Response Time: {details['latency']}s)")
+        print("")
+
+        # Prepare table data
+        table = []
+        for port, port_details in details["ports"].items():
+            # Determine service name based on port
+            service = get_service_name(port) if isinstance(port, int) else port
+
+            # Color-code the state
+            state = port_details.get("port_status", "Unknown")
+            if state == "Open":
+                state_colored = Fore.GREEN + state + Style.RESET_ALL
+            elif state == "Closed":
+                state_colored = Fore.RED + state + Style.RESET_ALL
+            elif state == "Filtered":
+                state_colored = Fore.YELLOW + state + Style.RESET_ALL
+            else:
+                state_colored = state
+
+            # Highlight IDS/IPS and Firewall detections
+            ids_ips_status = port_details.get("ids_ips_detection", "Unknown")
+            if "Firewall" in ids_ips_status or "IDS/IPS" in ids_ips_status:
+                ids_ips_colored = Fore.MAGENTA + ids_ips_status + Style.RESET_ALL
+            else:
+                ids_ips_colored = ids_ips_status
+
+            row = [
+                f"{port}/tcp" if isinstance(port, int) else port,
+                state_colored,
+                service,
+                port_details.get("evasion_used", "No"),
+                port_details.get("firewalk_used", "No"),
+                port_details.get("segment_detected", "Unknown"),
+                port_details.get("segment_ip", "N/A"),
+                ids_ips_colored,
+                port_details.get("echo_reply_status", "N/A"),
+                port_details.get("custom_tool_output", "N/A")
+            ]
+            table.append(row)
+
+        # Print table
+        print(tabulate(table, headers=headers, tablefmt="fancy_grid"))
+        print("\n")
+
+    # DPI Results
+    if dpi_results:
+        print(Fore.GREEN + "Deep Packet Inspection Results:" + Style.RESET_ALL + "\n")
+        dpi_headers = [
+            "Attack Type",
+            "Detected",
+            "Current Network Status"
+        ]
+
+        dpi_table = []
+        for attack_type, detected in dpi_results.items():
+            current_status = Fore.RED + "Happening" + Style.RESET_ALL if detected else Fore.GREEN + "Not Happening" + Style.RESET_ALL
+            detected_status = Fore.RED + "Yes" + Style.RESET_ALL if detected else Fore.GREEN + "No" + Style.RESET_ALL
+            dpi_table.append([attack_type, detected_status, current_status])
+
+        if dpi_table:
+            print(tabulate(dpi_table, headers=dpi_headers, tablefmt="fancy_grid"))
+        else:
+            print("No DPI results to display.")
+    else:
+        print("\nNo DPI results to display.")
+
+    # Summary Section
+    summarize_ports(scan_results)
+
+def summarize_ports(scan_results):
+    """
+    Summarizes ports based on IDS/IPS and Firewall detections.
+
+    Args:
+        scan_results (list): List of scan result dictionaries.
+    """
+    ports_with_ids_ips_fw = set()
+    ports_without_ids_ips_fw = set()
+
+    for result in scan_results:
+        target_ip = result.get("target_ip")
+        segment_ip = result.get("segment_ip") if result.get("segment_ip") else "None"
+        ids_ips_status = result.get("ids_ips_detection", "Unknown")
+
+        if ids_ips_status in ["IDS/IPS Detected", "Present"]:
+            ports_with_ids_ips_fw.add((target_ip, segment_ip))
+        else:
+            ports_without_ids_ips_fw.add((target_ip, segment_ip))
+
+    print("\n" + Fore.YELLOW + "Summary of Ports:" + Style.RESET_ALL)
+    print("\n" + Fore.GREEN + "Ports behind IDS/IPS/FW:" + Style.RESET_ALL)
+    if ports_with_ids_ips_fw:
+        for ip, segment in ports_with_ids_ips_fw:
+            print(f"{ip} (Segment: {segment})")
+    else:
+        print("None detected.")
+
+    print("\n" + Fore.GREEN + "Ports without IDS/IPS/FW:" + Style.RESET_ALL)
+    if ports_without_ids_ips_fw:
+        for ip, segment in ports_without_ids_ips_fw:
+            print(f"{ip} (Segment: {segment})")
+    else:
+        print("None detected.")
+
+# ---------------------------- Main Execution ----------------------------
+
+def main():
+    print_banner()
+    (
+        targets,
+        target_ports,
+        max_threads,
+        scans_per_port,
+        selected_scans,
+        selected_evasions,
+        firewalk,
+        customtool,
+        dpi,
+        output_format,
+        config_path
+    ) = parse_arguments()
+
+    # Load configurations from file if provided
+    config = load_config(config_path)
+
+    scan_results = []
+    dpi_results = {}
+
+    # Determine evasion techniques to use
+    if selected_evasions:
+        evasion_list = selected_evasions
+    elif 'evasion' in config:
+        evasion_list = config['evasion']
+    else:
+        evasion_list = []  # No evasion by default
+
+    # Define scanning and evasion functions dynamically
+    scan_functions = SCAN_FUNCTIONS
+    evasion_functions = EVASION_FUNCTIONS
+
+    # Select scan functions based on configuration or user input
+    if selected_scans:
+        selected_scan_techniques = selected_scans
+    elif 'scan_types' in config:
+        selected_scan_techniques = config['scan_types']
+    else:
+        # Default scan types if not specified in config
+        selected_scan_techniques = list(scan_functions.keys())
+
+    # Validate selected scan techniques
+    valid_scan_techniques = [scan for scan in selected_scan_techniques if scan in scan_functions]
+    if not valid_scan_techniques:
+        logging.error("No valid scan techniques selected.")
+        print(Fore.RED + "Error: No valid scan techniques selected. Use --scans to specify valid scan types." + Style.RESET_ALL)
+        sys.exit(1)
+
+    # Select evasion techniques based on configuration or user input
+    # Already handled above
+
+    # Calculate total available scans
+    total_available_scans = len(valid_scan_techniques) + len(evasion_list) + (1 if firewalk else 0)
+    scans_per_port = min(scans_per_port, total_available_scans)
+
+    # Create a ThreadPoolExecutor for concurrent scanning
+    with ThreadPoolExecutor(max_workers=max_threads) as executor:
+        futures = []
+
+        for target in targets:
+            # Shuffle scan techniques to randomize execution order
+            random_scans = valid_scan_techniques.copy()
+            random.shuffle(random_scans)
+            selected_scan_techniques = random_scans[:scans_per_port]
+
+            # Submit selected scan functions
+            for scan_name in selected_scan_techniques:
+                scan_func = scan_functions.get(scan_name)
+                if scan_func:
+                    if scan_func.__code__.co_argcount == 1:
+                        futures.append(executor.submit(scan_func, target))
+                    elif scan_func.__code__.co_argcount == 2:
+                        for port in target_ports:
+                            futures.append(executor.submit(scan_func, target, port))
+
+            # Submit evasion techniques if selected
+            for ev_name in evasion_list:
+                ev_func = evasion_functions.get(ev_name)
+                if ev_func:
+                    if ev_func.__code__.co_argcount == 1:
+                        futures.append(executor.submit(ev_func, target))
+                    elif ev_func.__code__.co_argcount == 2:
+                        for port in target_ports:
+                            futures.append(executor.submit(ev_func, target, port))
+
+            # Submit firewalk technique if enabled
+            if firewalk:
+                fw_func = scan_functions.get("ai_ml_firewall_bypass")
+                if fw_func:
+                    for port in target_ports:
+                        futures.append(executor.submit(fw_func, target, port))
+
+        # Collect results from futures
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                scan_results.append(result)
+
+    # Perform DPI if enabled
+    if dpi:
+        for target in targets:
+            packet = IP(dst=target)/TCP()
+            dpi_result = deep_packet_inspection(packet)
+            if dpi_result:
+                dpi_results[target] = dpi_result
+
+    # Handle custom tool output if specified
+    # Custom tool is executed per target-port combination
+    if customtool:
+        print(Fore.YELLOW + "\nExecuting Custom Tool:" + Style.RESET_ALL)
+        with ThreadPoolExecutor(max_workers=max_threads) as executor:
+            custom_futures = []
+            for result in scan_results:
+                target_ip = result.get("target_ip")
+                target_port = result.get("target_port")
+                if target_port:
+                    custom_futures.append(
+                        executor.submit(execute_custom_tool, customtool, target_ip, target_port)
+                    )
+                else:
+                    custom_futures.append(
+                        executor.submit(execute_custom_tool, customtool, target_ip, "N/A")
+                    )
+            # Collect custom tool outputs
+            for result, future in zip(scan_results, custom_futures):
+                custom_output = future.result()
+                result["custom_tool_output"] = custom_output
+                print(f"{Fore.BLUE}Custom Tool Output for {result['target_ip']}:{result['target_port']}:{Style.RESET_ALL}\n{custom_output}\n")
+
+    # AI/ML Processing
+    detect_false_positives(scan_results)
+    with ThreadPoolExecutor(max_workers=max_threads) as executor:
+        adaptive_scanning(scan_results, scan_functions, evasion_functions, target_ports, executor)
+
+    # Print formatted scan results with headers based on options used
+    print_scan_results(scan_results, dpi_results, output_format)
+
+    # Summarize and print ports
+    summarize_ports(scan_results)
+
+    # Summary
+    detected_segments = sum(1 for result in scan_results if result.get("segment_detected") in ["Segment Detected", "TCP Segment Detected"])
+    detected_ids_ips = sum(1 for result in scan_results if result.get("ids_ips_detection") in ["IDS/IPS Detected", "Present"])
+
+    print("\n" + Fore.YELLOW + "Summary of Results:" + Style.RESET_ALL + "\n")
+    print(f"{Fore.GREEN}Total Targets Scanned:{Style.RESET_ALL} {len(targets)}")
+    print(f"{Fore.GREEN}Total Ports Scanned:{Style.RESET_ALL} {len(target_ports)}")
+    print(f"{Fore.GREEN}Segments Detected:{Style.RESET_ALL} {detected_segments}")
+    print(f"{Fore.GREEN}IDS/IPS/FW Detected:{Style.RESET_ALL} {detected_ids_ips}")
+
+    # Calculate weighting
+    total_weight = calculate_weighting(scan_results)
+    configuration_quality = "Good" if total_weight >= 0 else "Bad"
+    color_quality = Fore.GREEN if configuration_quality == "Good" else Fore.RED
+    print(f"{Fore.GREEN}Configuration Quality:{Style.RESET_ALL} {color_quality}{configuration_quality}{Style.RESET_ALL} (Total Weight: {total_weight})")
+
+# ---------------------------- Entry Point ----------------------------
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(Fore.RED + "\nScan interrupted by user." + Style.RESET_ALL)
+        logging.info("Scan interrupted by user.")
+        sys.exit(0)
