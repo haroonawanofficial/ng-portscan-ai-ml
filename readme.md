@@ -11,6 +11,34 @@ The **Next-Generation Port Scanner** is an advanced, AI/ML-powered port scanning
 - **Deep Packet Inspection (DPI)**: Analyzes network traffic to identify firewalls, IDS/IPS, and segment configurations.
 - **Dynamic Reporting**: Generates detailed tabular and JSON reports, highlighting detected vulnerabilities and network configurations.
 
+### How Requests Look
+- With simple Nmap (for example purpose but it can be any tool like hping or custom written in go, perl, python, c++, etc)
+Here’s how a standard Nmap SYN scan request looks without script's integration:
+
+ ```bash
+IP(dst=192.168.1.1, ttl=64)/
+TCP(dport=80, flags="S", options=[('MSS', 1460), ('WScale', 7), ('SAckOK', None)])
+
+- TTL: Default TTL value (64).
+- TCP Flags: SYN (`S`) flag to initiate a connection.
+- Options: Standard TCP options like MSS, Window Scale, and SACK.
+   ```
+
+- With NG-PortScan ML and AI combined
+Here’s how the combined request with script's `tcp_with_http` evasion and Nmap for port 80 would look:
+
+```bash
+IP(dst=192.168.1.1, ttl=128, options=[IPOption(b'\x01'*40)])/
+TCP(dport=80, flags="S", window=8192, options=[('MSS', 1460), ('WScale', 7), ('SAckOK', None)])/
+Raw(load="GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+
+
+- TTL: Modified (e.g., 128).
+- IP Options: Custom padding (`b'\x01'*40`) for evasion.
+- TCP Flags: SYN (`S`) with custom `window=8192` and options.
+- Payload: HTTP request injected by your script.
+```
+
 ### Installation
 1. Clone the repository:
    ```bash
