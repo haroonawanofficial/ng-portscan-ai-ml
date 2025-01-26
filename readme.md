@@ -30,13 +30,13 @@ Here’s how the combined request with script's `tcp_with_http` evasion and Nmap
 ```bash
 IP(dst=192.168.1.1, ttl=128, options=[IPOption(b'\x01'*40)])/
 TCP(dport=80, flags="S", window=8192, options=[('MSS', 1460), ('WScale', 7), ('SAckOK', None)])/
-Raw(load="GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+Raw(load="GET / HTTP/1.1\r\nHost: safe.com\r\n\r\n")
 
 
 - TTL: Modified (e.g., 128).
 - IP Options: Custom padding (`b'\x01'*40`) for evasion.
 - TCP Flags: SYN (`S`) with custom `window=8192` and options.
-- Payload: HTTP request injected by your script.
+- Payload: HTTP request injected by script.
 ```
 
 ### Installation
