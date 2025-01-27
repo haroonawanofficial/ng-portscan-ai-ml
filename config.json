@@ -1,0 +1,55 @@
+{
+  "scan_types": [
+    "tcp_with_http",
+    "udp_with_dns",
+    "icmp_with_custom_data"
+  ],
+  "evasion": [
+    "random_ttl_icmp",
+    "tcp_window_size_manipulation",
+    "tcp_timestamp_manipulation"
+  ],
+  "firewalk": true,
+  "targets": [
+    "192.168.1.1",
+    "192.168.1.100",
+    "10.0.0.1"
+  ],
+  "ports": [
+    80,
+    443,
+    22
+  ],
+  "custom_tool": "nmap -p {port} {target} --data-length 100",
+  "dpi_enabled": true,
+  "threads": 10,
+  "scans_per_port": 3,
+  "output_format": "nmap",
+  "logging": {
+    "enabled": true,
+    "file": "scan_log.txt",
+    "level": "info"
+  },
+  "ai_ml": {
+    "adaptive_model_path": "adaptive_model.pkl",
+    "false_positive_model_path": "false_positive_model.pkl"
+  },
+  "timeouts": {
+    "packet_response_timeout": 2,
+    "custom_tool_timeout": 120
+  },
+  "network_parameters": {
+    "default_ttl": 64,
+    "tcp_window_size": 8192,
+    "udp_payload_size": 512
+  },
+  "advanced_settings": {
+    "enable_fragmentation": true,
+    "enable_decoy_ips": true,
+    "decoy_ips": [
+      "192.168.1.50",
+      "192.168.1.51",
+      "10.0.0.2"
+    ]
+  }
+}
