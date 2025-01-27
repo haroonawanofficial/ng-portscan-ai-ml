@@ -81,7 +81,9 @@ ICMP(type=3, code=13, load="Filtered by advanced firewall.")  # Enhanced evasion
 
 I leave it upto to users reading this, can you spot the difference?
 
-
+### Config.json support
+- Sample of config.json tailored for advanced port scanning and evasion tool is provided, please change it as you like.
+ 
 ### Installation
 1. Clone the repository:
    ```bash
