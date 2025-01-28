@@ -17,11 +17,11 @@ Here’s how a standard Nmap SYN scan request looks without script's integration
 
  ```bash
 IP(dst=192.168.1.1, ttl=64)/
-TCP(dport=80, flags="S", options=[('MSS', 1460), ('WScale', 7), ('SAckOK', None)])
+TCP(dport=80, flags="S", options=[('MSS', 1460)])
 
 - TTL: Default TTL value (64).
 - TCP Flags: SYN (`S`) flag to initiate a connection.
-- Options: Standard TCP options like MSS, Window Scale, and SACK.
+- Options: Standard TCP options like MSS, Window Scale.
    ```
 
 - With NG-PortScan ML and AI combined
